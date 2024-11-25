@@ -75,21 +75,11 @@ def sliding_window(data, sw_width, in_start=0):
             in_start += 1
     return np.array(X)
 
-def pearson_corr(x, y):
-    mean_x = torch.mean(x)
-    mean_y = torch.mean(y)
-    xm = x - mean_x
-    ym = y - mean_y
-    r_num = torch.sum(xm * ym)
-    r_den = torch.norm(xm) * torch.norm(ym)
-    r = r_num / r_den
-    return r
-
 
 if __name__ == '__main__':
     
     TIME_STEP = 31
-    BATCH_SIZE = 128 # 128
+    BATCH_SIZE = 128
     epoches = 250
 
     seed = random.randint(0, 4294967295)
