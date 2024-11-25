@@ -1,0 +1,183 @@
+import sys
+import numpy
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+from torch.utils.data import DataLoader,TensorDataset, Dataset
+import numpy as np
+import pandas as pd
+from plotly import graph_objects as go
+import matplotlib.pyplot as plt
+import math
+from sklearn import metrics
+import os
+import torch.nn.functional as F
+import shutil
+import random
+from tqdm import tqdm
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+class lstm_net(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, layers):
+        super(lstm_net, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_dim,  
+            hidden_size=hidden_dim,  
+            num_layers=layers, 
+            bias=True,  
+            batch_first=True,
+        )
+
+        self.fc1 = nn.Sequential(
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ELU(inplace=True),
+        )
+        self.fc2 = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim//2),
+            nn.ELU(inplace=True),
+            nn.Linear(hidden_dim//2, 1),
+        )
+
+    def forward(self,x):
+        r_out,(h_t,c_t) = self.lstm(x)
+        batch, time_step, hidden_size = r_out.shape
+        out = r_out[:, -1, :].view(batch, -1)
+        out = self.fc1(out)
+        out = self.fc2(out)
+        return out
+
+class Data_set(Dataset):
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
+
+    def __getitem__(self, id):
+        data = (self.x[id],
+                self.y[id])
+        return data
+
+    def __len__(self):
+        return len(self.y)
+
+def sliding_window(data, sw_width, in_start=0):
+    X = []
+    data = np.array(data, type(float))
+    for _ in range(data.shape[0]):
+        in_end = in_start + sw_width
+        if (in_end>data.shape[0]):
+            break
+        else:
+            train_seq = data[in_start:in_end, :]
+            X.append(train_seq)
+            in_start += 1
+    return np.array(X)
+
+def pearson_corr(x, y):
+    mean_x = torch.mean(x)
+    mean_y = torch.mean(y)
+    xm = x - mean_x
+    ym = y - mean_y
+    r_num = torch.sum(xm * ym)
+    r_den = torch.norm(xm) * torch.norm(ym)
+    r = r_num / r_den
+    return r
+
+
+if __name__ == '__main__':
+    
+    TIME_STEP = 31
+    BATCH_SIZE = 128 # 128
+    epoches = 250
+
+    seed = random.randint(0, 4294967295)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.set_default_tensor_type(torch.FloatTensor)
+
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+    data = pd.read_excel(r'./data.xlsx')
+
+    data = np.array(data)
+    data = data[:,3:]
+
+    train_set = data[:3652+365+366+365,:]
+    test_set = data[3652+365+366:3652+365+366+365,:]
+
+    train_x = torch.tensor(sliding_window((train_set[:, 0:-1]), TIME_STEP).astype(np.float32))
+    train_y = torch.tensor(sliding_window((train_set[:, -1:]), TIME_STEP)[:, -1, :].astype(np.float32))
+    
+    test_x = torch.tensor(sliding_window((test_set[:, 0:-1]), TIME_STEP).astype(np.float32))
+    test_y = sliding_window((test_set[:, -1:]), TIME_STEP)[:, -1, :].astype(np.float32)
+
+    loader_lstm = DataLoader(Data_set(train_x, train_y), batch_size=BATCH_SIZE, shuffle=False, drop_last=True)
+
+    prediction = np.zeros((model_num,test_y.shape[0]))
+
+    for seed_num in tqdm(range(0,model_num)):
+        print('seed_num:',seed_num)
+        seed = random.randint(0, 4294967295)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.set_default_tensor_type(torch.FloatTensor)
+
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+
+        model_lstm = lstm_net(input_dim=8, hidden_dim=64, output_dim=1, layers=3).to(device)
+        optimizer = optim.Adam(model_lstm.parameters(),lr = 3e-4)
+        criterion = nn.MSELoss()
+        model_lstm.train()
+        lowest_loss = 1000000
+        loss_all = []
+        for epoch in range(epoches):
+            for data in loader_lstm:
+                x, y = data
+                x, y = x.to(device), y.to(device)
+                # x, y = torch.tensor(x), torch.tensor(y)
+                optimizer.zero_grad()
+                pred = model_lstm.forward(x).squeeze()
+                loss = criterion(pred, y.squeeze())
+                loss.backward()
+                optimizer.step()
+        
+            checkpoint = {"model_state_dict": model_lstm.state_dict(),
+                    "optimizer_state_dic": optimizer.state_dict(),
+                    "loss": loss,
+                    "epoch": epoch}
+            if loss.item() < lowest_loss:
+                lowest_loss = loss.item()
+                save_model_path = r'./temp'
+                path_checkpoint = save_model_path+'/'+'best_model.pkl'
+                torch.save(checkpoint, path_checkpoint)
+                # print('best model')
+        
+            nse = metrics.r2_score(y.cpu().detach().numpy(), pred.cpu().detach().numpy()) 
+            loss_all.append(loss.item())
+            # print('Epoch:', '%04d' % (epoch), 'loss:', loss.item(), 'NSE:', nse)
+        
+        
+        model_lstm_test = lstm_net(input_dim=8, hidden_dim=64, output_dim=1, layers=3)
+        model_lstm_test.load_state_dict(torch.load(r'./best_model.pkl')['model_state_dict'])
+        model_lstm_test.eval()
+        with torch.no_grad():
+            pred_temp = model_lstm_test.forward(torch.tensor(test_x)).squeeze()
+
+        prediction[seed_num,:] = pred_temp.squeeze()
+
+    test_y = test_y.reshape(-1,1)
+    R2_lstm = metrics.r2_score(test_y, prediction)
+    print('R2_lstm:', R2_lstm)
+    plt.figure()
+    plt.plot(test_y,label='true')
+    plt.plot(prediction,label='pred')
+    plt.legend()
+    plt.show()
