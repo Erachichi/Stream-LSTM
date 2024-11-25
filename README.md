@@ -2,7 +2,7 @@
 
 Software and data availability: 
 
-Name of software: An adaptive rainfall-runoff model for daily runoff prediction under the changing environment: Stream-LSTM 
+Name of software: Stream-LSTM Model for Runoff Prediction  
 
 Developers: Feichi Hu, Qinli Yang
 
